@@ -12,6 +12,7 @@
 ### Using RunLoop
 
 - Thread클래스를 사용해서 만든 메인스레드나 다른 스레드는 자체적으로 RunLoop를 가질 수 있다. 현재 스레드에서 `RunLoop.current`를 호출하면 Foundation 자동으로 RunLoop를 생성해준다. 
+- RunLoop를 명시적으로 사용하는 경우는 직접 스레드를 정의해서 사용하는 경우 뿐이며, 
 - run loop가 어떻게 동작하는지 이해가 없다면 주의해라.(특히 RunLoop를 실행하는 loop문이 있는 경우)
 - 런루프에의 작동방식에 대한 이해가 없다면 앱의 메인스레드를 실행하는 기본 main RunLoop를 사용하는게 낫다.
 
