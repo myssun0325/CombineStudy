@@ -324,3 +324,499 @@ if source == nil, requested > .none {
 
 #### Activating your timer
 
+- configuration이 끝났으니 이제 timer를 activate시켜보자.
+- 그 동안 많은 단계가 있었다. 코드들을 올바르지 못한곳에 넣을 여지가 있다.
+- Final.playground과 비교하면서 코드를 
+- Last step: Add this extension after the entire definition of DispatchTimerSubscription
+
+```swift
+extension Publishers {
+    static func timer(queue: DispatchQueue? = nil,
+                      interval: DispatchTimeInterval,
+                      leeway: DispatchTimeInterval = .nanoseconds(0),
+                      times: Subscribers.Demand = .unlimited) -> Publishers.DispatchTimer {
+        return Publishers.DispatchTimer(configuration: .init(queue: queue,
+                                                             interval: interval,
+                                                             leeway: leeway,
+                                                             times: times)
+        )
+    }
+}
+```
+
+
+
+#### Testing your timer
+
+- 대부분의 new timer 오퍼레이터의 파라미터들은 (interval을 제외한) default value를 갖는다.(일반적인 케이스에서 쉽게 사용하기 위해서). 이 defaults들은 멈추지 않는 timer를 생성한다. (has minimal leeway, 특정 지정된 큐가 없다.)
+- 테스트 코드를 추가해보자.
+
+```swift
+// 27
+var logger = TimeLogger(sinceOrigin: true)
+// 28
+let publisher = Publishers.timer(interval: .seconds(1), times: .max(6))
+// 29
+let subscription = publisher.sink { time in
+    print("Timer emits: \(time)", to: &logger)
+}
+/*
++1.04550s: Timer emits: DispatchTime(rawValue: 4785726696038)
++2.04384s: Timer emits: DispatchTime(rawValue: 4786725746396)
++3.04480s: Timer emits: DispatchTime(rawValue: 4787726655515)
++4.04486s: Timer emits: DispatchTime(rawValue: 4788726734133)
++5.04381s: Timer emits: DispatchTime(rawValue: 4789725682830)
++6.04484s: Timer emits: DispatchTime(rawValue: 4790726692953)
+*/
+```
+
+27. TimerLogger -> 챕터10 참고, 그 때랑 다른점: 시간차이나, 경과시간을 로깅할 수 있다.
+28. 매 초마다 찍히고 정확히 6번 fire 된다.
+29. TimeLogger를 통해 전달받은 value를 로깅한다.
+
+- test canceling your timer.
+  - add this code 
+
+```swift
+DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+    subscription.cancel()
+}
+```
+
+- 3개의 value만 방출되고 말것이다. `cancel` 확인(cancel 구현이 잘됐음을 확인)
+- Combine API에서 겉으로 발견하기 힘들지만, 우리가 배웠던거처럼 Subscription에서 대부분의 작업들이 이루어진다.
+
+
+
+### Publishers transforming values
+
+- 챕터9에서 배웠던 `share`오퍼레이터에 대한 얘기로 시작.
+- `shareReplay()` 만들기. 오퍼레이터를 작성하기 위해 아래의 동작을 수행하는 publisher를 만들것임. 만드려는 Publisher는 아래의 동작을 수행합니다.
+  - upstream의 구독을 첫번째 구독자에게 구독시킨다.? (Subscribes to the upstream publisher upon the first subscriber.)
+  - 마지막 N개의 값을 구독자들에게 replay합니다.
+  - 만약에 completion이 흘렀다면 새로운 구독자에게 completion을 알려줍니다.
+
+- `ShareReplay operator` 코드 예제
+
+
+
+#### Implementing a ShareReplay operator
+
+- `shareReplay()`를 구현하기 위해 필요한 것.
+  - `Subscription`프로토콜 채택, 이 구독은 각 subscriber들이 받게된다. subscriber들의 demand와 cancellation을 처리하기 위해 각 subscribere들은 독립된 subscription을 받게된다.
+  - `Publisher`프로토콜을 채택. subscriber이 share를 해야되기 때문에 클래스로 구현해야됨.(참조필요)
+
+```swift
+// 1. subscription을 구현하기 위해서 Publisher, Subscriber가 subscription에 access하고 mutate
+// 할 수 있어야 한다.
+fileprivate final class ShareReplaySubscription<Output, Failure: Error>: Subscription {
+    // 2. replay buffer's maximum capacity (이니셜라이져에서 초기화)
+    let capacity: Int
+    // 3. subscription동안 subscriber에 대한 참조를 유지. type system을 편리하게 사용하기 위해 type erase
+    var subscriber: AnySubscriber<Output, Failure>? = nil
+    // 4. publisher가 subscriber로부터 받은 demand를 누적요청을 트래킹함으로써
+    // 요청된 수의 값을 정확하게 전달할 수 있다.
+    var demand: Subscribers.Demand = .none
+    // 5. 보류중인 값(=subscriber에게 전달되거나 버려지기전까지의 값)을 저장합니다.
+    var buffer: [Output]
+    // 6. completion이 난 경우 이를 통해 새로운 subscriber에게 completion을 준다.
+    var completion: Subscribers.Completion<Failure>? = nil
+}
+
+```
+
+
+
+아래 Note내용을 잘 모르겠네요
+
+> completion 이벤트를 즉시 전달만 해야되고 completion이벤트를 keep하는게 불필요하다고 생각되면, rest assured that's note the case. 구독자는 subscription을 받고 (구독을하고) completion이벤트를 첫 이벤트로 받는다. (만약에 이전에 completion이 방출됐다면) . 첫번째 `request(:_)`가 이 시그널을 만든다. publisher는 이 request가 언제 발생할지 모른다. 그러므로 항상 대비해야하고, subscriber에게 적시에 completion을 전달해야한다.
+
+> Note: If you feel that it’s unnecessary to keep the completion event around when you’ll just deliver it immediately, rest assured that’s not the case. The subscriber should receive its subscription *first*, then receive a completion event — if one was previously emitted — as soon as it is ready to accept values. The first request(_:) it makes signals this. The publisher doesn’t know when this request will happen, so it just hands the completion over to the subscription to deliver it at the right time.
+
+
+
+#### Initializing your subscription
+
+- subscription의 정의에 아래 코드를 추가
+
+```swift
+    // upstream publisher로부터 여러 value들을 받고, 이 subscription 인스턴스에 세팅한다.
+    init<S>(subscriber: S,
+            replay: [Output],
+            capacity: Int,
+            completion: Subscribers.Completion<Failure>?)
+            where S: Subscriber,
+            Failure == S.Failure,
+            Output == S.Input {
+                //7. subscriber의 type-erase version을 저장
+                self.subscriber = AnySubscriber(subscriber)
+                // upstream publisher의 현재 버퍼, maximumCapacity, completion event 저장
+                self.buffer = replay
+                self.capacity = capacity
+                self.completion = completion
+    }
+```
+
+
+
+#### Sending completion events and outstanding values to the subscriber
+
+```swift
+    // relays completion events to the subscriber
+    private func complete(with completion: Subscribers.Completion<Failure>) {
+        // 9. 메서드의 duration동안 subscriber를 유지한다. class에서 nil로 설정한다.
+        // 이 방어코드는 subscriber가 잘못된 호출을 했을 경우 모든 issue를 무시하도록 보장한다.
+        guard let subscriber = subscriber else { return }
+        // 10. completion은 nil로 할당함으로써 한번만 방출된다. 그리고 버퍼를 비운다.
+        self.subscriber = nil
+        self.completion = nil
+        self.buffer.removeAll()
+        // relay the completion event to the subscriber
+        subscriber.receive(completion: completion)
+    }
+```
+
+```swift
+    // emit outstanding values to the subscriber.
+    private func emitAsNeeded() {
+        guard let subscriber = subscriber else { return }
+        //12. demand가 있고 버퍼에 값이 있는 경우에만 emit values
+        while self.demand > .none && !buffer.isEmpty {
+            // 13. outstanding demand를 한개 감소
+            self.demand -= .max(1)
+            // 14. subscriber에게 첫번째 (buffer)outstanding value를 보내고 응답으로 새로운 demand를 받는다.
+            let nextDemand = subscriber.receive(buffer.removeFirst())
+            // 15. 새로운 demand가 .none이 아니라면 total demand에 새로운 demand를 추가한다.
+            // 그렇지 않으면 crash가 날꺼다. Combine은 Subscribers.Demand.none을 zero로 취급하지 않는다.
+            // .none을 빼거나 더하는건 exception 에러를 발생시킴.
+            if nextDemand != .none {
+                self.demand += nextDemand
+            }
+        }
+        // 만약에 completion이벤트가 보류중이라면 이 때 보낸다.
+        if let completion = completion {
+            complete(with: completion)
+        }
+    }
+```
+
+```swift
+    // Subscription프로토콜의 요구 메서드 작성.
+    func request(_ demand: Subscribers.Demand) {
+        // check crash
+        if demand != .none {
+            self.demand += demand
+        }
+        emitAsNeeded()
+    }
+```
+
+> Note: demand가 .none인 경우에도 `emitAsNeeded()` 를 호출해도 이미 발생한 completion 이벤트를 적절하게 relay할 수 있다.
+
+
+
+#### Canceling your subscription
+
+```swift
+    // cancel the subscription
+    func cancel() {
+        complete(with: .finished)
+    }
+```
+
+```swift
+    func receive(_ input: Output) {
+        guard subscriber != nil else { return }
+        // 17. value를 buffer에 추가합니다.
+        // 무제한 요구(demand)와 같이 일반적인 케이스에 대해서 최적화를 할 수 있지만
+        // 이번 예제에서는 그렇제 하진 않겠다.
+        buffer.append(input)
+        if buffer.count > capacity {
+            // 18. buffer의 보다 요청된 capacitiy가 작다는걸 보장합니다.
+            // 무슨 말인지 모르겠는 아랫말..
+            // You handle this on a rolling, first-in-first-out basis – as an already-full buffer receives each new value, the current first value is removed.
+            buffer.removeFirst()
+        }
+        // 결과를 subscriber한테 전달합니다.
+        emitAsNeeded()
+    }
+```
+
+#### Finishing your subscription
+
+```swift
+    // accept completion events and subscription will complete.
+    // subscriber를 삭제하고, 버퍼를 비운다. (good for memory management)
+    // completion이벤트를 downstream으로 보낸다.
+    func receive(completion: Subscribers.Completion<Failure>) {
+        guard let subscriber = subscriber else { return }
+        self.subscriber = nil
+        self.buffer.removeAll()
+        subscriber.receive(completion: completion)
+    }
+```
+
+#### Coding your publisher
+
+- Publisher는 대게 값 타입으로 struct로 구현한다. 하지만 가끔 Publishers.Multicast(multicast()를 리턴하는)오 ㅏ같이 class로 구현해야한다. 이런 publisher에게 클래스가 필요하지만, 규칙의 예외는 아니지만, 구조체를 사용하는 경우가 대부분입니다.
+
+```swift
+
+extension Publishers {
+    // 20. 오퍼레이터의 single instance를 subscriber들에게 share. 그래서 클래스 사용. It’s also generic, with the final type of the upstream publisher as a parameter.
+    final class ShareReplay<Upstream: Publisher>: Publisher {
+        // 21. doesn't change the output or failure types of the upstream publisher
+        typealias Output = Upstream.Output
+        typealias Failure = Upstream.Failure
+    }
+}
+```
+
+#### Adding the publisher's required properties
+
+```swift
+extension Publishers {
+    // 20. 오퍼레이터의 single instance를 subscriber들에게 share. 그래서 클래스 사용. It’s also generic, with the final type of the upstream publisher as a parameter.
+    final class ShareReplay<Upstream: Publisher>: Publisher {
+        // 21. doesn't change the output or failure types of the upstream publisher
+        typealias Output = Upstream.Output
+        typealias Failure = Upstream.Failure
+        
+        // 22. 동시에 여러 subscriber에게 feeding할꺼라서 lock을 사용.
+        // you'll need a lock to guarantee exclusive access to your mutable variables.
+        private let lock = NSRecursiveLock()
+        // 23. upstream에 대한 reference 유지
+        private let upstream: Upstream
+        // 24. maximum recording capacity of your replay buffer
+        private let capacity: Int
+        // 25. storage for the recorded values.
+        private var replay = [Output]()
+        // 26. 다수의 subscriber에게 feed하기 때문에 그들에 event를 알려주기 위해사용.
+        // 각 subscriber는 각 전용의 subscription으로부터 값을 받는다. (subscriber랑 1:1)
+        private var subscriptions = [ShareReplaySubscription<Output, Failure>]()
+        // 27. replay value even after completion,
+        private var completion: Subscribers.Completion<Failure>? = nil
+    }
+}
+```
+
+- In the end, you’ll see it’s not that much, but there is housekeeping to do, like using proper locking, so that your operator will run smoothly under all conditions. > 문장 이해안감
+
+#### Initializing and relaying values to your publisher
+
+```swift
+        // initializer
+        init(upstream: Upstream, capacity: Int) {
+            self.upstream = upstream
+            self.capacity = capacity
+        }
+        
+        private func relay(_ value: Output) {
+            // 28. mutable
+            lock.lock()
+            // 꼭 defer를 써야하는건 아니지만, 나중에 메서드를 변경하거나 early return 문을 추가할 경우에 대해 unlock하는걸 까먹는걸 방지하기 위한 연습.
+            defer { lock.unlock() }
+            
+            // 29. upstream이 아직 complete 되지 않은 경우에만
+            guard completion == nil else { return }
+            
+            // 30. Adds the value to the rolling buffer and only keeps the latest values of capacity. These are the ones to replay to new subscribers.
+            // rolling buffer = 순환 버퍼?
+            replay.append(value)
+            if replay.count > capacity {
+                replay.removeFirst()
+            }
+            
+            // 31. Relays the buffered value to each connected subscriber.
+            subscriptions.forEach {
+                _ = $0.receive(value)
+            }
+        }
+```
+
+
+
+#### Letting your publisher know when it's done
+
+```swift
+        private func complete(_ completion: Subscribers.Completion<Failure>) {
+            lock.lock()
+            defer { lock.unlock() }
+            // 32. 추후 subscriber들에 대한 completion event 저장
+            self.completion = completion
+            // 33. Relaying it to each connected subscriber
+            subscriptions.forEach {
+                _ = $0.receive(completion: completion)
+            }
+        }
+```
+
+- This standard prototype for receive(subscriber:) specifies that the subscriber, whatever it is, must have Input and Failure types that match the publisher’s Output and Failure types. 
+
+```swift
+        func receive<S: Subscriber>(subscriber: S) where Failure == S.Failure,
+            Output == S.Input {
+                lock.lock()
+                defer { lock.unlock() }
+        }
+```
+
+#### Creating your subscription
+
+- 위의 receive메서드를 보충.
+
+```swift
+        // prototype for receive(subscriber:)
+        func receive<S: Subscriber>(subscriber: S) where Failure == S.Failure,
+            Output == S.Input {
+                lock.lock()
+                defer { lock.unlock() }
+                // 34. 새로운 subscription은 subscriber에 대해 참조하고 현재 replay buffer의 값, capacity, outstanding completion event를 받는다.
+                let subscription = ShareReplaySubscription(
+                    subscriber: subscriber,
+                    replay: replay,
+                    capacity: capacity,
+                    completion: completion)
+                
+                // 35. keep the subscription around to pass future events to it.
+                subscriptions.append(subscription)
+                // 36. subscriber에게 subscription을 보냄.
+                subscriber.receive(subscription: subscription)
+        }
+```
+
+#### Subscribing to the publisher and handling its inputs
+
+- 이제 upstream publisher를 구독할 준비가 되었다. 
+
+```swift
+        // prototype for receive(subscriber:)
+        func receive<S: Subscriber>(subscriber: S) where Failure == S.Failure, Output == S.Input {
+            lock.lock()
+            defer { lock.unlock() }
+            // 34. 새로운 subscription은 subscriber에 대해 참조하고 현재 replay buffer의 값, capacity, outstanding completion event를 받는다.
+            let subscription = ShareReplaySubscription(
+                subscriber: subscriber,
+                replay: replay,
+                capacity: capacity,
+                completion: completion)
+            
+            // 35. keep the subscription around to pass future events to it.
+            subscriptions.append(subscription)
+            // 36. subscriber에게 subscription을 보냄.
+            subscriber.receive(subscription: subscription)
+            // 37. upstream으로부터 1번만 구독
+            guard subscriptions.count == 1 else { return }
+            // 38. 간단한 AnySubscriber사용. 클로저를 인자로 받고 즉시 .unlimited 리퀘스트를 보낸다.
+            let sink = AnySubscriber(
+                receiveSubscription: { subscription in
+                    subscription.request(.unlimited)
+               // 39. Relay values you receive to downstream subscribers.
+            }, receiveValue: { [weak self] (value: Output) -> Subscribers.Demand in
+                    self?.relay(value)
+                    return .none
+                // 40. complete publisher with the completion event
+            }, receiveCompletion: { [weak self] in
+                    self?.complete($0)
+            })
+            // finish off the definition of this method
+            upstream.subscribe(sink)
+        }
+```
+
+> **Note**: You could initially request .max(self.capacity) and receive just that, but remember that Combine is demand-driven! If you don’t request as many values as the publisher is capable of producing, you may never get a completion event!
+
+
+
+#### Adding a convenience operator
+
+- 체이닝을 하기 위한 코드 추가
+
+```swift
+extension Publisher {
+    func shareReplay(capacity: Int = .max) -> Publishers.ShareReplay<Self> {
+        return Publishers.ShareReplay(upstream: self, capacity: capacity)
+    }
+}
+```
+
+#### Testing your subscription
+
+```swift
+
+// 41
+var logger = TimeLogger(sinceOrigin: true)
+// 42. 다른 시간에 값을 보내는것을 시뮬레이션하기 위한 subject
+let subject = PassthroughSubject<Int,Never>()
+// 43. subject를 share하고 2개의 값만 replay하도록.
+let publisher = subject.shareReplay(capacity: 2)
+// 44. 초기값
+subject.send(0)
+
+let subscription1 = publisher.sink( receiveCompletion: {
+    print("subscription2 completed: \($0)", to: &logger)
+  },
+  receiveValue: {
+    print("subscription2 received \($0)", to: &logger)
+  }
+)
+subject.send(1)
+subject.send(2)
+subject.send(3)
+
+let subscription2 = publisher.sink( receiveCompletion: {
+    print("subscription2 completed: \($0)", to: &logger)
+  },
+  receiveValue: {
+    print("subscription2 received \($0)", to: &logger)
+  }
+)
+subject.send(4)
+subject.send(5)
+subject.send(completion: .finished)
+
+var subscription3: Cancellable? = nil
+DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+    print("Subscribing to shareReplay after upstream completed")
+    subscription3 = publisher.sink(receiveCompletion: {
+      print("subscription3 completed: \($0)", to: &logger)
+    },
+    receiveValue: {
+      print("subscription3 received \($0)", to: &logger)
+    }
+)
+}
+```
+
+
+
+#### Verifying your subsription
+
+..skip..
+
+
+
+## Handling backpressure
+
+- 유체역학(?)에서 역압(backpressure)은 파이프를 통해 흐르는 유체에 저항하는 힘입니다.
+- Combine에선 publisher로부터 나온 value의 흐름에 저항을 의미한다.(?)
+- 여기서 저항은 무엇인가? 가끔 subscriber가 publisher로부터 방출된 값을 처리해야하는 경우가 있다.
+  - 센서로부터 들어오는 input data. (Processing high-frequency data, like input from sensors.)
+  - 대용량 파일 전송
+  - 복잡한 UI 업데이트
+  - user input을 기다림
+  - 더 일반적인 경우, 들어오는 데이터가 subscriber가 keep up with 할 수 없는 데이터인 경우,
+    - More generally, processing incoming data that the subscriber can’t keep up with at the rate it’s coming in.
+
+- Combine에서 제공하는 publisher-subscriber 메커니즘은 flxible합니다. **push** ㄱㅏ 아닌 **pull**ㅁㅔ커니즘을 사용합니다. subscriber는 publisher에게 값의 방출을 요구하고, 얼마나 수신할지를 수신할지를 결정합니다.
+- 이 요청 메커니즘은 adaptive합니다. demand는 subscriber가 값을 받을 때 마다 업데이트 됩니다. 이를 통해 subscriber가 데이터를 더 이상 수신하지 않으려는 경우`closing the tap`을 통해 backpressure를 다룰 수 있게 해준다.  나중에 더 많은 데이터를 수신하기 위해서 준비가 되었을 때 "opening it" 된다.
+
+> Note: demand는 추가하는 방법으로만 조절할 수 있다. (이전의 2장에서 살펴봤던 demand를 조절하는 방법을 상기해보자.) 새로운 `.max(N)` 나 `.unlimited` 를 반환해서 subscriber가 새로운 값을 받을 때마다 demand를 증가시킬 수 있다. 또는 `.none` 을 리턴해서 demand가 증가하지 않아야 한다고 명시할 수 도 있다.
+>
+> 그러나 subscriber가 새로운 max demand까지의 value를 받기 위해 "on the hook" 상태에 있습니다.(?)
+>
+> 예를 들어, 만약에 이전의 max demand가 3 value를 받고, subscriber가 값을 하나만 받고 .none을 반환했어도 "close the tap" 되지 않을 것이다. subscriber는 publisher가 value를 방출한 준비가되면 여전히 최대 2개의 값을 더 받을 수 있다.
+
+- 더 많은 value를 사용할 때 발생할 수 있는 일들은 전적으로 설계에 달렸습니다. You can:
+  - **Control**: the 
+
