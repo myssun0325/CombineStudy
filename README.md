@@ -15,7 +15,7 @@ Combine Study with RW.(ver. Mason)
 
 #### [9 - Networking](week5_ch09_networking.md)
 
-#### [11 - Timers](ch11_timer copy.md)
+#### [11 - Timers](ch11_timer.md)
 
 #### [12 - Key-Value Observing](ch12_keyValueObserving.md)
 
