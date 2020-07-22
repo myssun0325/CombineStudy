@@ -10,7 +10,7 @@
 
 - own publisher를 만들기 위해 살펴볼 3가지 방법
   1. Publisher 네임스페이스안에서 간단한 extension 사용
-  2. Subscription(produces values) 을 사용해서 Publishe 네임스페이스 안에서 새로운 타입을 정의한다.
+  2. Subscription(produces values) 을 사용해서 Publisher 네임스페이스 안에서 새로운 타입을 정의한다.
   3. 위와 유사한 방법으로 Subscription(transform values from an upstream publisher)을 가지고 새로운 타입을 정의한다.
      - 차이: 값을 생성하는 subscription이냐, 업스트림으로부터 값을 변형하는 subscription이냐.
 
@@ -223,7 +223,7 @@ private final class DispatchTimerSubscription<S: Subscriber>: Subscription where
 
 > Note: 마지막 14번은 Combine의 소유권(ownership)의 매커니즘을 이해하는데 중요하다. Subscription은 subscriber와 publihser간의 연결이다. 예를 들어 클로저를 홀딩하고 있는 object(like AnySubscriber or sink)
 >
-> 만약에 subscription을 홀드하고 있지 않으면 subscriber는 값을 받지 못하는 것을 볼 수 있을 것이다. subscription이 해제되지마자 모든 것이 중지된다. 내부 구현은 물론 publisher의 세부사항에 따라 달라질 수 있다.
+> 만약에 subscription에서 참조를 홀드하고 있지 않으면 subscriber는 값을 받지 못하는 것을 볼 수 있을 것이다. subscription이 해제되지마자 모든 것이 중지된다. 내부 구현은 물론 publisher의 세부사항에 따라 달라질 수 있다.
 
 
 
@@ -250,7 +250,7 @@ func cancel() {
 }
 ```
 
-- `DispatchSourceTimer`를 nil로 하는것은 running을 멈추기에 충분하다. subscriber프로퍼티를 nil로 설정하게 되면 subscription로부터 해제된다. 더 이상 필요하지 않은 객체르 메모리에서 유지하지 않으려면 반드시 자신의 subscription에서 이 작업을 수행해야 한다.
+- `DispatchSourceTimer`를 nil로 하는것은 running을 멈추기에 충분하다. subscriber프로퍼티를 nil로 설정하게 되면 subscription로부터 해제된다. 더 이상 필요하지 않은 객체를 메모리에서 유지하지 않으려면 반드시 자신의 subscription에서 이 작업을 수행해야 한다.
 - You can now start coding the core of the subscription: `request(_:)`
 
 
@@ -558,7 +558,7 @@ fileprivate final class ShareReplaySubscription<Output, Failure: Error>: Subscri
 
 #### Coding your publisher
 
-- Publisher는 대게 값 타입으로 struct로 구현한다. 하지만 가끔 Publishers.Multicast(multicast()를 리턴하는)오 ㅏ같이 class로 구현해야한다. 이런 publisher에게 클래스가 필요하지만, 규칙의 예외는 아니지만, 구조체를 사용하는 경우가 대부분입니다.
+- Publisher는 대게 값 타입으로 struct로 구현한다. 하지만 가끔 Publishers.Multicast(multicast()를 리턴하는 애와 같이 class로 구현해야한다. 이런 publisher에게 클래스가 필요하지만, 규칙의 예외는 아니지만, 구조체를 사용하는 경우가 대부분입니다.
 
 ```swift
 
@@ -817,6 +817,8 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
 >
 > 예를 들어, 만약에 이전의 max demand가 3 value를 받고, subscriber가 값을 하나만 받고 .none을 반환했어도 "close the tap" 되지 않을 것이다. subscriber는 publisher가 value를 방출한 준비가되면 여전히 최대 2개의 값을 더 받을 수 있다.
 
-- 더 많은 value를 사용할 때 발생할 수 있는 일들은 전적으로 설계에 달렸습니다. You can:
-  - **Control**: the 
-
+- 위를 해결하기 위한 3가지 방법
+  - 요구를 통해 흐름을 제어하는거
+  - Buffer로 담아두기
+  - Drop해버리는거
+- subscription 통해 처리, publisher를 
